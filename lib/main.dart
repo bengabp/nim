@@ -643,6 +643,132 @@ class _BarSliderThumbShape extends SliderComponentShape {
   }
 }
 
+// Waveform-like seek bar with progress fill and time labels
+class _WaveSeekBar extends StatelessWidget {
+  final Duration duration;
+  final Duration position;
+  final String seed;
+  final ValueChanged<double> onChanged;
+  final ValueChanged<double> onChangeEnd;
+
+  const _WaveSeekBar({
+    required this.duration,
+    required this.position,
+    required this.seed,
+    required this.onChanged,
+    required this.onChangeEnd,
+  });
+
+  String _fmt(Duration d) {
+    final mm = d.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final ss = d.inSeconds.remainder(60).toString().padLeft(2, '0');
+    final hh = d.inHours;
+    return hh > 0 ? '$hh:$mm:$ss' : '$mm:$ss';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final onColor = Theme.of(context).colorScheme.primary;
+    final textColor = Theme.of(context).colorScheme.onSurface.withOpacity(0.7);
+    final maxMs = duration.inMilliseconds;
+    final posMs = position.inMilliseconds.clamp(0, maxMs);
+    final ratio = maxMs == 0 ? 0.0 : posMs / maxMs;
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        LayoutBuilder(
+          builder: (context, c) {
+            return GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onHorizontalDragUpdate: (d) {
+                final localX = d.localPosition.dx.clamp(0.0, c.maxWidth);
+                final r = c.maxWidth == 0 ? 0.0 : localX / c.maxWidth;
+                onChanged((r * maxMs).toDouble());
+              },
+              onHorizontalDragEnd: (_) => onChangeEnd(posMs.toDouble()),
+              onTapDown: (d) {
+                final localX = d.localPosition.dx.clamp(0.0, c.maxWidth);
+                final r = c.maxWidth == 0 ? 0.0 : localX / c.maxWidth;
+                onChangeEnd((r * maxMs).toDouble());
+              },
+              child: CustomPaint(
+                size: Size(c.maxWidth, 36),
+                painter: _WaveformPainter(
+                  ratio: ratio,
+                  seed: seed,
+                  active: onColor,
+                  inactive: onColor.withOpacity(0.25),
+                ),
+              ),
+            );
+          },
+        ),
+        const SizedBox(height: 4),
+        Row(
+          children: [
+            Text(_fmt(Duration(milliseconds: posMs)), style: TextStyle(color: textColor, fontSize: 12)),
+            const Spacer(),
+            Text('-${_fmt(duration - Duration(milliseconds: posMs))}', style: TextStyle(color: textColor, fontSize: 12)),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class _WaveformPainter extends CustomPainter {
+  final double ratio; // 0..1
+  final String seed;
+  final Color active;
+  final Color inactive;
+
+  _WaveformPainter({required this.ratio, required this.seed, required this.active, required this.inactive});
+
+  List<double> _generateHeights(int n) {
+    // Deterministic pseudo randomness from seed
+    int h = 0;
+    for (final c in seed.codeUnits) {
+      h = (h * 31 + c) & 0x7fffffff;
+    }
+    final heights = List<double>.generate(n, (i) {
+      h = (h * 1664525 + 1013904223) & 0xffffffff;
+      final v = ((h >> 16) & 0xffff) / 0xffff; // 0..1
+      return 0.25 + 0.75 * v; // 0.25..1.0 of max height
+    });
+    return heights;
+  }
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final bars = (size.width / 4).floor(); // 2px bar + 2px gap
+    final heights = _generateHeights(bars);
+    final maxH = size.height - 4;
+    final activePaint = Paint()..color = active;
+    final inactivePaint = Paint()..color = inactive;
+    final activeBars = (bars * ratio).clamp(0, bars).floor();
+    double x = 0;
+    for (int i = 0; i < bars; i++) {
+      final h = heights[i] * maxH;
+      final y = (size.height - h) / 2;
+      final paint = i <= activeBars ? activePaint : inactivePaint;
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(Rect.fromLTWH(x, y, 2, h), const Radius.circular(1)),
+        paint,
+      );
+      x += 4; // bar + gap
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _WaveformPainter oldDelegate) {
+    return oldDelegate.ratio != ratio ||
+        oldDelegate.seed != seed ||
+        oldDelegate.active != active ||
+        oldDelegate.inactive != inactive;
+  }
+}
+
 class _ThemeToggle extends StatefulWidget {
   const _ThemeToggle();
 
@@ -757,6 +883,13 @@ class _MediaPanel extends StatefulWidget {
 class _MediaPanelState extends State<_MediaPanel> with TickerProviderStateMixin {
   bool _collapsed = false;
 
+  String _ellipsize(String s, int maxChars) {
+    if (s.length <= maxChars) return s;
+    final head = (maxChars * 0.6).floor();
+    final tail = maxChars - head - 1;
+    return s.substring(0, head) + '…' + s.substring(s.length - tail);
+  }
+
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
@@ -765,13 +898,13 @@ class _MediaPanelState extends State<_MediaPanel> with TickerProviderStateMixin 
       curve: Curves.easeOutCubic,
       padding: const EdgeInsets.all(8),
       child: ClipRRect(
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(24),
         child: BackdropFilter(
           filter: ui.ImageFilter.blur(sigmaX: 10, sigmaY: 10),
           child: Container(
             decoration: BoxDecoration(
               color: colors.surface.withOpacity(0.7),
-              borderRadius: BorderRadius.circular(16),
+              borderRadius: BorderRadius.circular(24),
               border: Border.all(color: colors.primary.withOpacity(0.25)),
             ),
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
@@ -788,6 +921,48 @@ class _MediaPanelState extends State<_MediaPanel> with TickerProviderStateMixin 
                         style: TextStyle(color: colors.onSurface, fontWeight: FontWeight.w600),
                       ),
                     ),
+                    if (_collapsed) ...[
+                      const SizedBox(width: 8),
+                      widget.isLoading
+                          ? const SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2.5))
+                          : IconButton(
+                              tooltip: widget.isPlaying ? 'Pause' : 'Play',
+                              onPressed: widget.onTogglePlay,
+                              icon: Icon(widget.isPlaying ? Icons.pause : Icons.play_arrow),
+                              color: colors.primary,
+                              iconSize: 22,
+                              padding: EdgeInsets.zero,
+                            ),
+                      IconButton(
+                        tooltip: 'Next',
+                        onPressed: widget.onNext,
+                        icon: const Icon(Icons.skip_next),
+                        color: colors.primary,
+                        iconSize: 22,
+                        padding: EdgeInsets.zero,
+                      ),
+                    ] else ...[
+                      IconButton(
+                        tooltip: 'Back 5s',
+                        onPressed: widget.onBack,
+                        icon: const Icon(Icons.replay_5),
+                        color: colors.primary,
+                      ),
+                      widget.isLoading
+                          ? const SizedBox(width: 28, height: 28, child: CircularProgressIndicator(strokeWidth: 3))
+                          : IconButton(
+                              tooltip: widget.isPlaying ? 'Pause' : 'Play',
+                              onPressed: widget.onTogglePlay,
+                              icon: Icon(widget.isPlaying ? Icons.pause_circle_filled : Icons.play_circle_fill),
+                              color: colors.primary,
+                            ),
+                      IconButton(
+                        tooltip: 'Forward 5s',
+                        onPressed: widget.onForward,
+                        icon: const Icon(Icons.forward_5),
+                        color: colors.primary,
+                      ),
+                    ],
                     IconButton(
                       tooltip: _collapsed ? 'Expand' : 'Collapse',
                       onPressed: () => setState(() => _collapsed = !_collapsed),
@@ -803,111 +978,83 @@ class _MediaPanelState extends State<_MediaPanel> with TickerProviderStateMixin 
                       ? Column(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.end,
-                              children: [
-                                widget.isLoading
-                                    ? const SizedBox(width: 28, height: 28, child: CircularProgressIndicator(strokeWidth: 3))
-                                    : IconButton(
-                                        tooltip: widget.isPlaying ? 'Pause' : 'Play',
-                                        onPressed: widget.onTogglePlay,
-                                        icon: Icon(widget.isPlaying ? Icons.pause : Icons.play_arrow),
-                                        color: colors.primary,
-                                      ),
-                                IconButton(
-                                  tooltip: 'Next',
-                                  onPressed: widget.onNext,
-                                  icon: const Icon(Icons.skip_next),
-                                  color: colors.primary,
-                                ),
-                              ],
-                            ),
-                            TweenAnimationBuilder<double>(
-                              duration: const Duration(milliseconds: 200),
-                              curve: Curves.easeOut,
-                              tween: Tween(
-                                begin: 0.0,
-                                end: widget.duration.inMilliseconds == 0
-                                    ? 0.0
-                                    : widget.position.inMilliseconds / widget.duration.inMilliseconds,
-                              ),
-                              builder: (context, v, _) => LinearProgressIndicator(
-                                value: widget.duration.inMilliseconds == 0 ? 0 : v.clamp(0.0, 1.0),
-                              ),
+                            _WaveSeekBar(
+                              duration: widget.duration,
+                              position: widget.position,
+                              seed: widget.title,
+                              onChanged: widget.onSeekChanged,
+                              onChangeEnd: widget.onSeekEnd,
                             ),
                           ],
                         )
                       : Column(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                IconButton(
-                                  tooltip: 'Back 5s',
-                                  onPressed: widget.onBack,
-                                  icon: const Icon(Icons.replay_5),
-                                  color: colors.primary,
-                                ),
-                                const SizedBox(width: 4),
-                                widget.isLoading
-                                    ? const SizedBox(width: 32, height: 32, child: CircularProgressIndicator(strokeWidth: 3))
-                                    : IconButton(
-                                        tooltip: widget.isPlaying ? 'Pause' : 'Play',
-                                        onPressed: widget.onTogglePlay,
-                                        icon: Icon(widget.isPlaying ? Icons.pause_circle_filled : Icons.play_circle_fill),
-                                        color: colors.primary,
-                                        iconSize: 32,
-                                      ),
-                                const SizedBox(width: 4),
-                                IconButton(
-                                  tooltip: 'Forward 5s',
-                                  onPressed: widget.onForward,
-                                  icon: const Icon(Icons.forward_5),
-                                  color: colors.primary,
-                                ),
-                              ],
-                            ),
+                            // Controls are now inline with the header row above
                             const SizedBox(height: 8),
-                            _SeekBar(
+                            _WaveSeekBar(
                               duration: widget.duration,
                               position: widget.position,
+                              seed: widget.title,
                               onChanged: widget.onSeekChanged,
                               onChangeEnd: widget.onSeekEnd,
                             ),
                             const SizedBox(height: 6),
-                            // tracks (scrollable, constrained height)
+                            // track pills with wrap (3 per row)
                             ConstrainedBox(
-                              constraints: const BoxConstraints(maxHeight: 160),
+                              constraints: const BoxConstraints(maxHeight: 120),
                               child: Scrollbar(
                                 thumbVisibility: true,
-                                child: ListView.builder(
-                                  shrinkWrap: true,
-                                  itemCount: widget.tracks.length,
-                                  itemBuilder: (context, i) {
-                                    final playing = i == widget.currentIndex && widget.isPlaying;
-                                    return InkWell(
-                                      onTap: () => widget.onSelectTrack(i),
-                                      child: Padding(
-                                        padding: const EdgeInsets.symmetric(vertical: 6.0),
-                                        child: Row(
-                                          children: [
-                                            Icon(playing ? Icons.equalizer : Icons.audiotrack, color: playing ? colors.primary : colors.onSurface.withOpacity(0.6)),
-                                            const SizedBox(width: 10),
-                                            Expanded(
-                                              child: Text(
-                                                widget.tracks[i].name,
-                                                style: TextStyle(
-                                                  color: playing ? colors.onSurface : colors.onSurface.withOpacity(0.7),
-                                                  fontWeight: playing ? FontWeight.w700 : FontWeight.w400,
+                                child: LayoutBuilder(
+                                  builder: (context, cons) {
+                                    const spacing = 8.0;
+                                    const perRow = 3;
+                                    final pillWidth = (cons.maxWidth - spacing * (perRow - 1)) / perRow;
+                                    return SingleChildScrollView(
+                                      child: Wrap(
+                                        spacing: spacing,
+                                        runSpacing: spacing,
+                                        children: [
+                                          for (int i = 0; i < widget.tracks.length; i++)
+                                            SizedBox(
+                                              width: pillWidth,
+                                              child: InkWell(
+                                                onTap: () => widget.onSelectTrack(i),
+                                                borderRadius: BorderRadius.circular(20),
+                                                child: Container(
+                                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                                  decoration: BoxDecoration(
+                                                    color: i == widget.currentIndex ? colors.primary.withOpacity(0.2) : colors.surface.withOpacity(0.4),
+                                                    borderRadius: BorderRadius.circular(20),
+                                                    border: Border.all(color: i == widget.currentIndex ? colors.primary : colors.onSurface.withOpacity(0.15)),
+                                                  ),
+                                                  child: Row(
+                                                    mainAxisSize: MainAxisSize.min,
+                                                    children: [
+                                                      Icon(
+                                                        i == widget.currentIndex ? Icons.equalizer : Icons.audiotrack,
+                                                        size: 14,
+                                                        color: i == widget.currentIndex ? colors.primary : colors.onSurface.withOpacity(0.6),
+                                                      ),
+                                                      const SizedBox(width: 6),
+                                                      Expanded(
+                                                        child: Text(
+                                                          _ellipsize(widget.tracks[i].name, 22),
+                                                          style: TextStyle(
+                                                            color: colors.onSurface,
+                                                            fontSize: 12,
+                                                            fontWeight: i == widget.currentIndex ? FontWeight.w700 : FontWeight.w400,
+                                                          ),
+                                                          overflow: TextOverflow.ellipsis,
+                                                          maxLines: 1,
+                                                        ),
+                                                      ),
+                                                    ],
+                                                  ),
                                                 ),
-                                                overflow: TextOverflow.ellipsis,
                                               ),
                                             ),
-                                            if (i == widget.currentIndex)
-                                              Icon(Icons.check, color: colors.primary, size: 18),
-                                          ],
-                                        ),
+                                        ],
                                       ),
                                     );
                                   },
